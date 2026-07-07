@@ -70,9 +70,8 @@ def _make_patched_fwd(original_fwd):
             want_requant=True,
         )
 
-        try:
-            if not isinstance(weight_qt, QuantizedTensor):
-                raise RuntimeError("cast_bias_weight did not return QuantizedTensor")
+        if not isinstance(weight_qt, QuantizedTensor):
+            raise RuntimeError("cast_bias_weight did not return QuantizedTensor")
 
             if not hasattr(weight_qt, "_qdata") or weight_qt._qdata is None:
                 raise RuntimeError("QuantizedTensor missing _qdata")
@@ -113,34 +112,29 @@ def _make_patched_fwd(original_fwd):
             import dp4a_ext
 
             M_total = input_2d.shape[0]
-            if M_total <= _M_CHUNK_SIZE:
-                out = dp4a_ext.int8_linear(input_2d, int8_data, scale_w, bias)
-            else:
-                chunks = []
-                for start in range(0, M_total, _M_CHUNK_SIZE):
-                    end = min(start + _M_CHUNK_SIZE, M_total)
-                    chunk_in = input_2d[start:end]
+            chunks = []
+            for start in range(0, M_total, _M_CHUNK_SIZE):
+                end = min(start + _M_CHUNK_SIZE, M_total)
+                chunk_in = input_2d[start:end]
+                try:
                     chunk_out = dp4a_ext.int8_linear(chunk_in, int8_data, scale_w, None)
-                    chunks.append(chunk_out)
-                out = torch.cat(chunks, dim=0)
-                if bias is not None:
-                    out = out + bias
+                except Exception as chunk_e:
+                    logger.info("DP4A kernel fallback chunk [%d:%d]: %s", start, end, chunk_e)
+                    w_fp = weight_qt._qdata.float() * weight_qt.params.scale
+                    if type(chunk_in) is not torch.Tensor:
+                        chunk_in = chunk_in.as_subclass(torch.Tensor)
+                    chunk_out = F.linear(chunk_in, w_fp, None)
+                chunks.append(chunk_out)
+
+            out = torch.cat(chunks, dim=0)
+            if bias is not None:
+                out = out + bias
 
             if input.ndim == 3:
                 out = out.reshape(input_shape[0], input_shape[1], int8_data.shape[0])
 
             uncast_bias_weight(self, weight_qt, bias, offload_stream)
             return out
-
-        except Exception as e:
-            logger.info("DP4A kernel fallback: %s", e)
-            weight_fp = weight_qt._qdata.float() * weight_qt.params.scale
-            if type(input) is not torch.Tensor:
-                x = F.linear(input.as_subclass(torch.Tensor), weight_fp, bias)
-            else:
-                x = F.linear(input, weight_fp, bias)
-            uncast_bias_weight(self, weight_qt, bias, offload_stream)
-            return x
 
     return patched
 
