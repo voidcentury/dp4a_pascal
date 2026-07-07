@@ -112,7 +112,8 @@ def _make_patched_fwd(original_fwd):
             import dp4a_ext
 
             M_total = input_2d.shape[0]
-            chunks = []
+            N = int8_data.shape[0]
+            out = torch.empty((M_total, N), dtype=in_dtype, device=input.device)
             for start in range(0, M_total, _M_CHUNK_SIZE):
                 end = min(start + _M_CHUNK_SIZE, M_total)
                 chunk_in = input_2d[start:end]
@@ -124,9 +125,9 @@ def _make_patched_fwd(original_fwd):
                     if type(chunk_in) is not torch.Tensor:
                         chunk_in = chunk_in.as_subclass(torch.Tensor)
                     chunk_out = F.linear(chunk_in, w_fp, None)
-                chunks.append(chunk_out)
+                out[start:end] = chunk_out
+                del chunk_out
 
-            out = torch.cat(chunks, dim=0)
             if bias is not None:
                 out = out + bias
 
