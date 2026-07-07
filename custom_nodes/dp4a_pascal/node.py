@@ -1,4 +1,5 @@
 import logging
+import math
 import torch
 import torch.nn.functional as F
 
@@ -8,6 +9,11 @@ from comfy.ops import cast_bias_weight, uncast_bias_weight
 from . import _DP4A_AVAILABLE, _IS_PASCAL
 
 logger = logging.getLogger("DP4A_Pascal")
+
+# Chunk M (token dimension) to cap peak GPU memory.
+# Each chunk allocates x_int8[M_chunk, K] + out[M_chunk, N] on device.
+# A chunk of 2048 tokens with N=14336 costs ~115 MB — safe for 4 GB cards.
+_M_CHUNK_SIZE = 2048
 
 
 def _can_patch_module(m):
@@ -105,7 +111,20 @@ def _make_patched_fwd(original_fwd):
                 )
 
             import dp4a_ext
-            out = dp4a_ext.int8_linear(input_2d, int8_data, scale_w, bias)
+
+            M_total = input_2d.shape[0]
+            if M_total <= _M_CHUNK_SIZE:
+                out = dp4a_ext.int8_linear(input_2d, int8_data, scale_w, bias)
+            else:
+                chunks = []
+                for start in range(0, M_total, _M_CHUNK_SIZE):
+                    end = min(start + _M_CHUNK_SIZE, M_total)
+                    chunk_in = input_2d[start:end]
+                    chunk_out = dp4a_ext.int8_linear(chunk_in, int8_data, scale_w, None)
+                    chunks.append(chunk_out)
+                out = torch.cat(chunks, dim=0)
+                if bias is not None:
+                    out = out + bias
 
             if input.ndim == 3:
                 out = out.reshape(input_shape[0], input_shape[1], int8_data.shape[0])
@@ -115,8 +134,11 @@ def _make_patched_fwd(original_fwd):
 
         except Exception as e:
             logger.info("DP4A kernel fallback: %s", e)
-            weight_fp = weight_qt.to(dtype=in_dtype)
-            x = F.linear(input, weight_fp, bias)
+            weight_fp = weight_qt._qdata.float() * weight_qt.params.scale
+            if type(input) is not torch.Tensor:
+                x = F.linear(input.as_subclass(torch.Tensor), weight_fp, bias)
+            else:
+                x = F.linear(input, weight_fp, bias)
             uncast_bias_weight(self, weight_qt, bias, offload_stream)
             return x
 
