@@ -73,69 +73,69 @@ def _make_patched_fwd(original_fwd):
         if not isinstance(weight_qt, QuantizedTensor):
             raise RuntimeError("cast_bias_weight did not return QuantizedTensor")
 
-            if not hasattr(weight_qt, "_qdata") or weight_qt._qdata is None:
-                raise RuntimeError("QuantizedTensor missing _qdata")
-            if weight_qt._qdata.dtype != torch.int8:
-                logger.debug("Fallback: weight _qdata dtype is %s, expected int8", weight_qt._qdata.dtype)
-                raise TypeError("weight is not int8")
+        if not hasattr(weight_qt, "_qdata") or weight_qt._qdata is None:
+            raise RuntimeError("QuantizedTensor missing _qdata")
+        if weight_qt._qdata.dtype != torch.int8:
+            logger.debug("Fallback: weight _qdata dtype is %s, expected int8", weight_qt._qdata.dtype)
+            raise TypeError("weight is not int8")
 
-            int8_data = weight_qt._qdata
-            if not hasattr(weight_qt, "params") or weight_qt.params is None:
-                raise RuntimeError("QuantizedTensor missing params")
-            scale_w = weight_qt.params.scale
-            if scale_w.device != input.device:
-                scale_w = scale_w.to(device=input.device, dtype=torch.float32)
+        int8_data = weight_qt._qdata
+        if not hasattr(weight_qt, "params") or weight_qt.params is None:
+            raise RuntimeError("QuantizedTensor missing params")
+        scale_w = weight_qt.params.scale
+        if scale_w.device != input.device:
+            scale_w = scale_w.to(device=input.device, dtype=torch.float32)
 
-            K = int8_data.shape[1]
-            if K % 4 != 0:
-                raise RuntimeError(f"K={K} not divisible by 4")
+        K = int8_data.shape[1]
+        if K % 4 != 0:
+            raise RuntimeError(f"K={K} not divisible by 4")
 
-            input_shape = input.shape
-            if input.ndim == 3:
-                input_2d = input.reshape(-1, input_shape[2])
-            else:
-                input_2d = input
+        input_shape = input.shape
+        if input.ndim == 3:
+            input_2d = input.reshape(-1, input_shape[2])
+        else:
+            input_2d = input
 
-            nonlocal _hit
-            if not _hit:
-                _hit = True
-                logger.info(
-                    "DP4A kernel: M=%d, N=%d, K=%d, int8.shape=%s",
-                    input_2d.shape[0], int8_data.shape[0], K, list(int8_data.shape),
-                )
-            else:
-                logger.debug(
-                    "DP4A kernel: M=%d, N=%d, K=%d, input.shape=%s, int8.shape=%s",
-                    input_2d.shape[0], int8_data.shape[0], K, input_shape, int8_data.shape,
-                )
+        nonlocal _hit
+        if not _hit:
+            _hit = True
+            logger.info(
+                "DP4A kernel: M=%d, N=%d, K=%d, int8.shape=%s",
+                input_2d.shape[0], int8_data.shape[0], K, list(int8_data.shape),
+            )
+        else:
+            logger.debug(
+                "DP4A kernel: M=%d, N=%d, K=%d, input.shape=%s, int8.shape=%s",
+                input_2d.shape[0], int8_data.shape[0], K, input_shape, int8_data.shape,
+            )
 
-            import dp4a_ext
+        import dp4a_ext
 
-            M_total = input_2d.shape[0]
-            N = int8_data.shape[0]
-            out = torch.empty((M_total, N), dtype=in_dtype, device=input.device)
-            for start in range(0, M_total, _M_CHUNK_SIZE):
-                end = min(start + _M_CHUNK_SIZE, M_total)
-                chunk_in = input_2d[start:end]
-                try:
-                    chunk_out = dp4a_ext.int8_linear(chunk_in, int8_data, scale_w, None)
-                except Exception as chunk_e:
-                    logger.info("DP4A kernel fallback chunk [%d:%d]: %s", start, end, chunk_e)
-                    w_fp = weight_qt._qdata.float() * weight_qt.params.scale
-                    if type(chunk_in) is not torch.Tensor:
-                        chunk_in = chunk_in.as_subclass(torch.Tensor)
-                    chunk_out = F.linear(chunk_in, w_fp, None)
-                out[start:end] = chunk_out
-                del chunk_out
+        M_total = input_2d.shape[0]
+        N = int8_data.shape[0]
+        out = torch.empty((M_total, N), dtype=in_dtype, device=input.device)
+        for start in range(0, M_total, _M_CHUNK_SIZE):
+            end = min(start + _M_CHUNK_SIZE, M_total)
+            chunk_in = input_2d[start:end]
+            try:
+                chunk_out = dp4a_ext.int8_linear(chunk_in, int8_data, scale_w, None)
+            except Exception as chunk_e:
+                logger.info("DP4A kernel fallback chunk [%d:%d]: %s", start, end, chunk_e)
+                w_fp = weight_qt._qdata.float() * weight_qt.params.scale
+                if type(chunk_in) is not torch.Tensor:
+                    chunk_in = chunk_in.as_subclass(torch.Tensor)
+                chunk_out = F.linear(chunk_in, w_fp, None)
+            out[start:end] = chunk_out
+            del chunk_out
 
-            if bias is not None:
-                out = out + bias
+        if bias is not None:
+            out = out + bias
 
-            if input.ndim == 3:
-                out = out.reshape(input_shape[0], input_shape[1], int8_data.shape[0])
+        if input.ndim == 3:
+            out = out.reshape(input_shape[0], input_shape[1], int8_data.shape[0])
 
-            uncast_bias_weight(self, weight_qt, bias, offload_stream)
-            return out
+        uncast_bias_weight(self, weight_qt, bias, offload_stream)
+        return out
 
     return patched
 
