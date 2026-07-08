@@ -8,8 +8,6 @@ from comfy.ops import cast_bias_weight, uncast_bias_weight
 
 from . import _DP4A_AVAILABLE, _IS_PASCAL
 
-logger = logging.getLogger("DP4A_Pascal")
-
 # Chunk M (token dimension) to cap peak GPU memory.
 # Each chunk allocates x_int8[M_chunk, K] + out[M_chunk, N] on device.
 # A chunk of 2048 tokens with N=14336 costs ~115 MB — safe for 4 GB cards.
@@ -18,23 +16,23 @@ _M_CHUNK_SIZE = 2048
 
 def _can_patch_module(m, name=""):
     if not hasattr(m, "forward_comfy_cast_weights"):
-        logger.info("Skipping %s: no forward_comfy_cast_weights", name)
+        logging.info("Skipping %s: no forward_comfy_cast_weights", name)
         return False
     if not isinstance(getattr(m, "weight", None), QuantizedTensor):
-        logger.info("Skipping %s: weight not QuantizedTensor (%s)", name, type(m.weight).__name__)
+        logging.info("Skipping %s: weight not QuantizedTensor (%s)", name, type(m.weight).__name__)
         return False
     if getattr(m, "layout_type", None) != "TensorWiseINT8Layout":
-        logger.info("Skipping %s: layout=%s", name, getattr(m, "layout_type", None))
+        logging.info("Skipping %s: layout=%s", name, getattr(m, "layout_type", None))
         return False
     if getattr(m, "comfy_force_cast_weights", False):
-        logger.info("Skipping %s: force_cast=True", name)
+        logging.info("Skipping %s: force_cast=True", name)
         return False
     if len(m.weight_function) > 0 or len(m.bias_function) > 0:
-        logger.info("Skipping %s: wf=%d bf=%d", name, len(m.weight_function), len(m.bias_function))
+        logging.info("Skipping %s: wf=%d bf=%d", name, len(m.weight_function), len(m.bias_function))
         return False
     K = m.weight.shape[-1] if hasattr(m.weight, "shape") else m.in_features
     if K % 4 != 0:
-        logger.info("Skipping %s: K=%d not divisible by 4", name, K)
+        logging.info("Skipping %s: K=%d not divisible by 4", name, K)
         return False
     return True
 
@@ -52,7 +50,7 @@ def _make_patched_fwd(original_fwd):
             and len(self.weight_function) == 0
             and len(self.bias_function) == 0
         ):
-            logger.debug(
+            logging.debug(
                 "Fallback (weight_only_quant=%s, is_qt=%s, in_dtype=%s, "
                 "force_cast=%s, wf=%d, bf=%d)",
                 weight_only_quant,
@@ -81,7 +79,7 @@ def _make_patched_fwd(original_fwd):
         if not hasattr(weight_qt, "_qdata") or weight_qt._qdata is None:
             raise RuntimeError("QuantizedTensor missing _qdata")
         if weight_qt._qdata.dtype != torch.int8:
-            logger.debug("Fallback: weight _qdata dtype is %s, expected int8", weight_qt._qdata.dtype)
+            logging.debug("Fallback: weight _qdata dtype is %s, expected int8", weight_qt._qdata.dtype)
             raise TypeError("weight is not int8")
 
         int8_data = weight_qt._qdata
@@ -104,12 +102,12 @@ def _make_patched_fwd(original_fwd):
         nonlocal _hit
         if not _hit:
             _hit = True
-            logger.info(
+            logging.info(
                 "DP4A kernel: M=%d, N=%d, K=%d, int8.shape=%s",
                 input_2d.shape[0], int8_data.shape[0], K, list(int8_data.shape),
             )
         else:
-            logger.debug(
+            logging.debug(
                 "DP4A kernel: M=%d, N=%d, K=%d, input.shape=%s, int8.shape=%s",
                 input_2d.shape[0], int8_data.shape[0], K, input_shape, int8_data.shape,
             )
@@ -125,7 +123,7 @@ def _make_patched_fwd(original_fwd):
             try:
                 chunk_out = dp4a_ext.int8_linear(chunk_in, int8_data, scale_w, None)
             except Exception as chunk_e:
-                logger.info("DP4A kernel fallback chunk [%d:%d]: %s", start, end, chunk_e)
+                logging.info("DP4A kernel fallback chunk [%d:%d]: %s", start, end, chunk_e)
                 w_fp = weight_qt._qdata.float() * weight_qt.params.scale
                 if type(chunk_in) is not torch.Tensor:
                     chunk_in = chunk_in.as_subclass(torch.Tensor)
@@ -161,13 +159,13 @@ def _patch_model(model_nn):
         m._dp4a_patched = True
         patched_count += 1
         patched_names.append(name)
-        logger.info("Patched %s (%s) — layout=%s, shape=%s, K=%d",
+        logging.info("Patched %s (%s) — layout=%s, shape=%s, K=%d",
                      name, type(m).__qualname__,
                      getattr(m, "layout_type", None),
                      list(m.weight.shape) if hasattr(m.weight, "shape") else "?",
                      m.weight._qdata.shape[1] if hasattr(m.weight, "_qdata") else m.in_features)
 
-    logger.info("DP4A Pascal: patched %d layers: %s", patched_count, patched_names)
+    logging.info("DP4A Pascal: patched %d layers: %s", patched_count, patched_names)
     return patched_count
 
 
@@ -186,16 +184,16 @@ class DP4APascalApply:
 
     def apply(self, model):
         if not _IS_PASCAL:
-            logger.warning("No Pascal GPU detected — returning model unmodified")
+            logging.warning("No Pascal GPU detected — returning model unmodified")
             return (model,)
 
         if not _DP4A_AVAILABLE:
-            logger.warning("dp4a_ext not loaded — returning model unmodified")
+            logging.warning("dp4a_ext not loaded — returning model unmodified")
             return (model,)
 
         m = model.clone()
         count = _patch_model(m.model)
-        logger.info("DP4A Pascal: patched %d layers", count)
+        logging.info("DP4A Pascal: patched %d layers", count)
         if count == 0:
-            logger.warning("No TensorWiseINT8 layers found to patch")
+            logging.warning("No TensorWiseINT8 layers found to patch")
         return (m,)
