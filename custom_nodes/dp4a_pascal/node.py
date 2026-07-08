@@ -11,7 +11,7 @@ from . import _DP4A_AVAILABLE, _IS_PASCAL
 # Chunk M (token dimension) to cap peak GPU memory.
 # Each chunk allocates x_int8[M_chunk, K] + out[M_chunk, N] on device.
 # A chunk of 2048 tokens with N=14336 costs ~115 MB — safe for 4 GB cards.
-_M_CHUNK_SIZE = 2048
+_M_CHUNK_SIZE = 8192
 
 
 def _can_patch_module(m, name=""):
