@@ -18,23 +18,23 @@ _M_CHUNK_SIZE = 2048
 
 def _can_patch_module(m, name=""):
     if not hasattr(m, "forward_comfy_cast_weights"):
-        logger.debug("Skipping %s: no forward_comfy_cast_weights", name)
+        logger.info("Skipping %s: no forward_comfy_cast_weights", name)
         return False
     if not isinstance(getattr(m, "weight", None), QuantizedTensor):
-        logger.debug("Skipping %s: weight not QuantizedTensor (%s)", name, type(m.weight).__name__)
+        logger.info("Skipping %s: weight not QuantizedTensor (%s)", name, type(m.weight).__name__)
         return False
     if getattr(m, "layout_type", None) != "TensorWiseINT8Layout":
-        logger.debug("Skipping %s: layout=%s", name, getattr(m, "layout_type", None))
+        logger.info("Skipping %s: layout=%s", name, getattr(m, "layout_type", None))
         return False
     if getattr(m, "comfy_force_cast_weights", False):
-        logger.debug("Skipping %s: force_cast=True", name)
+        logger.info("Skipping %s: force_cast=True", name)
         return False
     if len(m.weight_function) > 0 or len(m.bias_function) > 0:
-        logger.debug("Skipping %s: wf=%d bf=%d", name, len(m.weight_function), len(m.bias_function))
+        logger.info("Skipping %s: wf=%d bf=%d", name, len(m.weight_function), len(m.bias_function))
         return False
     K = m.weight.shape[-1] if hasattr(m.weight, "shape") else m.in_features
     if K % 4 != 0:
-        logger.debug("Skipping %s: K=%d not divisible by 4", name, K)
+        logger.info("Skipping %s: K=%d not divisible by 4", name, K)
         return False
     return True
 
